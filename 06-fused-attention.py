@@ -701,7 +701,7 @@ TORCH_HAS_FP8 = hasattr(torch, 'float8_e5m2')
 BATCH, N_HEADS = 4, 32
 # vary seq length for fixed head and batch=4
 configs = []
-for HEAD_DIM in [64, 128]:
+for HEAD_DIM in [64,]:
     for mode in ["fwd", "bwd"]:
         for causal in [True, False]:
             # Enable warpspec for causal fwd on Hopper
@@ -710,13 +710,14 @@ for HEAD_DIM in [64, 128]:
                 configs.append(
                     triton.testing.Benchmark(
                         x_names=["N_CTX"],
-                        x_vals=[2**i for i in range(10, 15)],
+                        x_vals=[2**i for i in range(10, 12)],
                         line_arg="provider",
                         line_vals=["triton-fp16"] + (["triton-fp8"] if TORCH_HAS_FP8 else []) +
-                        (["flash"] if HAS_FLASH else []),
+                        (["flash"] if HAS_FLASH else []) + ["naive"],
+                        #(["flash"] if HAS_FLASH else []),
                         line_names=["Triton [FP16]"] + (["Triton [FP8]"] if TORCH_HAS_FP8 else []) +
-                        (["Flash-2"] if HAS_FLASH else []),
-                        styles=[("red", "-"), ("blue", "-"), ("green", "-")],
+                        (["Flash-2"] if HAS_FLASH else []) + ["Naive"],
+                        styles=[("red", "-"), ("blue", "-"), ("green", "-"), ("orange", "-")],
                         ylabel="TFLOPS",
                         plot_name=
                         f"fused-attention-batch{BATCH}-head{N_HEADS}-d{HEAD_DIM}-{mode}-causal={causal}-warp_specialize={warp_specialize}",
@@ -730,6 +731,15 @@ for HEAD_DIM in [64, 128]:
                         },
                     ))
 
+def naive_attention(q, k, v, causal):
+    S = q @ k.transpose(-2, -1)
+    if causal:
+        N_CTX = q.shape[-2]
+        mask = torch.tril(torch.ones((N_CTX, N_CTX), device=q.device))
+        S = S.masked_fill(mask == 0, float("-inf"))
+    P = torch.softmax(S, dim=-1)
+    o = P @ v
+    return o
 
 @triton.testing.perf_report(configs)
 def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, warp_specialize, mode, provider, device=DEVICE):
@@ -761,6 +771,18 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, causal, warp_specialize, mo
             do = torch.randn_like(o)
             fn = lambda: o.backward(do, retain_graph=True)
         ms = triton.testing.do_bench(fn)
+    
+    if provider == "naive":
+        q = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+        k = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+        v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
+        fn = lambda: naive_attention(q, k, v, causal)
+        if mode == "bwd":
+            o = fn()
+            do = torch.randn_like(o)
+            fn = lambda: o.backward(do, retain_graph=True)
+        ms = triton.testing.do_bench(fn)
+
     flops_per_matmul = 2.0 * BATCH * H * N_CTX * N_CTX * HEAD_DIM
     total_flops = 2 * flops_per_matmul
     if causal:
