@@ -32,8 +32,8 @@ def naive_attention(q, k, v, causal):
     return o
 
 # torch.compile
-compiled_attention = torch.compile(naive_attention)
-compiled_attention_max = torch.compile(naive_attention, mode='max_autotune')
+compiled_attention = torch.compile(naive_attention, mode='max-autotune-no-cudagraphs')
+compiled_attention_max = torch.compile(naive_attention, mode='max-autotune')
 
 BATCH, N_HEADS = 4, 32
 configs = []
@@ -45,9 +45,9 @@ for HEAD_DIM in [64]:
             for warp_specialize in [False, True] if enable_ws else [False]:
                 
                 # Define the providers we want to compare
-                line_vals = ["triton-fp16", "naive", "torch.compile"]
-                line_names = ["Triton [FP16]", "Naive PyTorch", "Torch Compile"]
-                styles = [("red", "-"), ("blue", "-"), ("purple", "-")]
+                line_vals = ["triton-fp16", "naive", "torch.compile", "torch.compile-max"]
+                line_names = ["Triton [FP16]", "Naive PyTorch", "Torch Compile", "Torch Compile Max Autotune"]
+                styles = [("red", "-"), ("blue", "-"), ("purple", "-"), ("brown", "-")]
                 
                 if TORCH_HAS_FP8:
                     line_vals.append("triton-fp8")
@@ -101,10 +101,15 @@ def run_benchmark(BATCH, H, N_CTX, HEAD_DIM, causal, warp_specialize, mode, prov
         qkv = torch.randn((BATCH, N_CTX, 3, H, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
         fn = lambda: flash_attn_func(qkv, causal=causal)
 
-    elif provider in ["naive", "torch.compile"]:
-        target_fn = compiled_attention if provider == "torch.compile" else naive_attention
-        
+    elif provider in ["naive", "torch.compile", "torch.compile-max"]:
         if provider == "torch.compile":
+            target_fn = compiled_attention
+        elif provider == "torch.compile-max":
+            target_fn = compiled_attention_max
+        else:
+            target_fn = naive_attention
+
+        if provider in ["torch.compile", "torch.compile-max"]:
             _ = target_fn(q, k, v, causal)
             
         fn = lambda: target_fn(q, k, v, causal)
@@ -113,7 +118,7 @@ def run_benchmark(BATCH, H, N_CTX, HEAD_DIM, causal, warp_specialize, mode, prov
         o = fn()
         do = torch.randn_like(o)
         
-        if provider == "torch.compile":
+        if provider in ["torch.compile", "torch.compile-max"]:
             # Warmup backward compiler
             o.backward(do, retain_graph=True)
             q.grad, k.grad, v.grad = None, None, None
