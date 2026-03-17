@@ -23,8 +23,6 @@ try:
 except ImportError:
     HAS_FLASH = False
 
-TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
-
 torch._functorch.config.donated_buffer = False
 
 # def naive_attention(q, k, v, causal):
@@ -64,11 +62,6 @@ for HEAD_DIM in [64]:
                 line_vals = ["triton-fp16", "naive", "torch.compile"]
                 line_names = ["Triton [FP16]", "Naive PyTorch", "Torch Compile"]
                 styles = [("red", "-"), ("blue", "-"), ("purple", "-")]
-
-                if TORCH_HAS_FP8:
-                    line_vals.append("triton-fp8")
-                    line_names.append("Triton [FP8]")
-                    styles.append(("green", "-"))
 
                 if HAS_FLASH:
                     line_vals.append("flash")
@@ -126,10 +119,8 @@ def standard_sm_scale(head_dim):
     return 1.0 / math.sqrt(head_dim)
 
 
-def provider_list(include_fp8=True, include_flash=True):
+def provider_list(include_flash=True):
     vals = ["triton-fp16", "naive", "torch.compile"]
-    if include_fp8 and TORCH_HAS_FP8:
-        vals.append("triton-fp8")
     if include_flash and HAS_FLASH:
         vals.append("flash")
     return vals
@@ -176,12 +167,7 @@ def get_flash_qkv(batch, heads, n_ctx, head_dim, dtype, device, seed=0):
 
 def provider_forward(provider, q, k, v, causal, sm_scale, warp_specialize):
     if "triton" in provider:
-        q_in, k_in, v_in = q, k, v
-        if provider == "triton-fp8":
-            q_in = q.to(torch.float8_e5m2)
-            k_in = k.to(torch.float8_e5m2)
-            v_in = v.permute(0, 1, 3, 2).contiguous().permute(0, 1, 3, 2).to(torch.float8_e5m2)
-        out = triton_attention(q_in, k_in, v_in, causal, sm_scale, warp_specialize)
+        out = triton_attention(q, k, v, causal, sm_scale, warp_specialize)
         return out, {"q": q, "k": k, "v": v}
 
     elif provider == "flash":
@@ -209,6 +195,16 @@ def benchmark_one(provider, batch, heads, n_ctx, head_dim, causal, warp_speciali
 
     q, k, v = make_inputs(batch, heads, n_ctx, head_dim, dtype, device, seed=123)
 
+    # Warmup: run forward (and backward for torch.compile) to trigger compilation
+    # before resetting memory stats and timing
+    if provider == "torch.compile":
+        out_warmup, _ = provider_forward(provider, q, k, v, causal, sm_scale, warp_specialize)
+        if mode == "bwd":
+            do_warmup = torch.randn_like(out_warmup)
+            out_warmup.backward(do_warmup, retain_graph=True)
+            zero_grads(q, k, v)
+        torch.cuda.synchronize()
+
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
     torch.cuda.synchronize()
@@ -225,13 +221,6 @@ def benchmark_one(provider, batch, heads, n_ctx, head_dim, causal, warp_speciali
     else:
         out, aux = provider_forward(provider, q, k, v, causal, sm_scale, warp_specialize)
         do = torch.randn_like(out)
-
-        if provider == "torch.compile":
-            out.backward(do, retain_graph=True)
-            zero_grads(q, k, v)
-
-        torch.cuda.reset_peak_memory_stats(device)
-        torch.cuda.synchronize()
 
         def fn():
             if provider == "flash":
@@ -499,11 +488,6 @@ def run_benchmark(BATCH, H, N_CTX, HEAD_DIM, causal, warp_specialize, mode, prov
     v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device, requires_grad=True)
 
     if "triton" in provider:
-        if mode == "fwd" and "fp8" in provider:
-            q = q.to(torch.float8_e5m2)
-            k = k.to(torch.float8_e5m2)
-            v = v.permute(0, 1, 3, 2).contiguous().permute(0, 1, 3, 2).to(torch.float8_e5m2)
-
         fn = lambda: triton_attention(q, k, v, causal, sm_scale, warp_specialize)
 
     elif provider == "flash":
@@ -568,7 +552,7 @@ def main():
     parser.add_argument("--dtype", type=str, default="float16")
     parser.add_argument("--run-correctness", type=str2bool, default=True)
     parser.add_argument("--run-bench", type=str2bool, default=True)
-    parser.add_argument("--run-triton-report", type=str2bool, default=True)
+    parser.add_argument("--run-triton-report", type=str2bool, default=False)
     parser.add_argument("--outdir", type=str, default="benchmark_results_final")
     args = parser.parse_args()
 
@@ -586,7 +570,7 @@ def main():
     if args.providers.strip():
         providers = [x.strip() for x in args.providers.split(",") if x.strip()]
     else:
-        providers = provider_list(include_fp8=True, include_flash=True)
+        providers = provider_list(include_flash=True)
 
     dtype_map = {
         "float16": torch.float16,
@@ -654,8 +638,6 @@ def main():
                                 ws_values = [False, True] if enable_ws else [False]
                                 for warp_specialize in ws_values:
                                     for provider in providers:
-                                        if provider == "triton-fp8" and not TORCH_HAS_FP8:
-                                            continue
                                         if provider == "flash" and not HAS_FLASH:
                                             continue
                                         try:

@@ -1,0 +1,7 @@
+BATCH,H,HEAD_DIM,N_CTX,causal,dk_max_abs_err,dq_max_abs_err,dv_max_abs_err,mode,output_max_abs_err,provider,warp_specialize
+4,32,64,512,True,0.00244140625,0.00390625,0.00390625,correctness,0.001953125,triton-fp16,False
+4,32,64,512,False,0.00146484375,0.001708984375,0.0009765625,correctness,0.0009765625,triton-fp16,False
+4,32,64,1024,True,0.00390625,0.00390625,0.00390625,correctness,0.001953125,triton-fp16,False
+4,32,64,1024,False,0.00146484375,0.00146484375,0.00146484375,correctness,0.000732421875,triton-fp16,False
+4,32,64,2048,True,0.0029296875,0.00390625,0.00390625,correctness,0.001953125,triton-fp16,False
+4,32,64,2048,False,0.0009765625,0.0009765625,0.000732421875,correctness,0.000732421875,triton-fp16,False
