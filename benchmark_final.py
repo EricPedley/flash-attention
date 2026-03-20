@@ -7,6 +7,7 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import torch
 import triton
+import numpy as np
 import torch._functorch.config
 
 # import Triton implementation and helpers
@@ -59,8 +60,8 @@ for HEAD_DIM in [64]:
             enable_ws = mode == "fwd" and (is_blackwell() or (is_hopper() and not causal))
             for warp_specialize in [False, True] if enable_ws else [False]:
 
-                line_vals = ["triton-fp16", "naive", "torch.compile"]
-                line_names = ["Triton [FP16]", "Naive PyTorch", "Torch Compile"]
+                line_vals = ["triton", "naive", "torch.compile"]
+                line_names = ["Triton", "Naive PyTorch", "Torch Compile"]
                 styles = [("red", "-"), ("blue", "-"), ("purple", "-")]
 
                 if HAS_FLASH:
@@ -120,7 +121,7 @@ def standard_sm_scale(head_dim):
 
 
 def provider_list(include_flash=True):
-    vals = ["triton-fp16", "naive", "torch.compile"]
+    vals = ["triton", "naive", "torch.compile"]
     if include_flash and HAS_FLASH:
         vals.append("flash")
     return vals
@@ -280,7 +281,7 @@ def run_correctness_check(batch, heads, n_ctx, head_dim, causal, warp_specialize
     dv_err = (v_ref.grad - v_tri.grad.float()).abs().max().item()
 
     results = [{
-        "provider": "triton-fp16",
+        "provider": "triton",
         "BATCH": batch,
         "H": heads,
         "N_CTX": n_ctx,
@@ -550,7 +551,7 @@ def main():
     parser.add_argument("--causal-values", type=str, default="true,false")
     parser.add_argument("--providers", type=str, default="")
     parser.add_argument("--dtype", type=str, default="float16")
-    parser.add_argument("--run-correctness", type=str2bool, default=True)
+    parser.add_argument("--run-correctness", type=str2bool, default=False)
     parser.add_argument("--run-bench", type=str2bool, default=True)
     parser.add_argument("--run-triton-report", type=str2bool, default=False)
     parser.add_argument("--outdir", type=str, default="benchmark_results_final")
@@ -562,7 +563,8 @@ def main():
 
     batch_sizes = parse_int_list(args.batch_sizes)
     head_counts = parse_int_list(args.head_counts)
-    seq_lengths = parse_int_list(args.seq_lengths)
+    # seq_lengths = parse_int_list(args.seq_lengths)
+    seq_lengths = list(map(int, np.arange(128, 2049, 128)))
     head_dims = parse_int_list(args.head_dims)
     modes = [x.strip() for x in args.modes.split(",") if x.strip()]
     causal_values = [str2bool(x.strip()) for x in args.causal_values.split(",") if x.strip()]
