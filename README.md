@@ -1,4 +1,18 @@
 # FlashAttention
+
+## About This Fork
+
+This fork extends the original repo with a performance study of the Triton FlashAttention-2 kernel. The main script is [`benchmark_final.py`](benchmark_final.py), which adds:
+
+- Naive PyTorch attention and `torch.compile`d versions as baselines
+- Benchmarks across forward and backward passes, causal and non-causal masking, varying sequence lengths, and (where supported) warp specialization
+- Correctness verification of the Triton kernel against the naive reference for both outputs and gradients
+- Custom plots and CSVs tracking latency, peak memory, TFLOPS, and speedup vs. naive
+
+Results are in [`benchmark_results_final/`](benchmark_results_final/). A full analysis is in our accompanying report.
+
+---
+
 This repository provides the official implementation of FlashAttention and
 FlashAttention-2 from the
 following papers.
